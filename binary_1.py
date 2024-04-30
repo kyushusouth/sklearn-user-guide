@@ -18,9 +18,16 @@ from sklearn.experimental import (
     enable_iterative_imputer,  # noqa
 )
 from sklearn.impute import IterativeImputer, KNNImputer, SimpleImputer
-from sklearn.inspection import PartialDependenceDisplay, permutation_importance
+from sklearn.inspection import (
+    PartialDependenceDisplay,
+    permutation_importance,
+)
 from sklearn.linear_model import BayesianRidge, LogisticRegression
 from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    DetCurveDisplay,
+    PrecisionRecallDisplay,
+    RocCurveDisplay,
     accuracy_score,
     average_precision_score,
     f1_score,
@@ -32,6 +39,8 @@ from sklearn.metrics import (
 from sklearn.model_selection import (
     GridSearchCV,
     RepeatedStratifiedKFold,
+    cross_val_predict,
+    cross_validate,
     train_test_split,
 )
 from sklearn.pipeline import Pipeline
@@ -47,32 +56,20 @@ sns.set_style("whitegrid")
 
 
 def log_metrics(
-    X_train: pl.DataFrame,
-    y_train: np.ndarray,
     X_test: pl.DataFrame,
     y_test: np.ndarray,
-    splitter: RepeatedStratifiedKFold,
     pipeline: Pipeline,
+    cv_result: dict[str, np.ndarray],
 ) -> None:
-    y_pred_proba_oof = []
-    y_oof = []
-    for train_index, val_index in splitter.split(X_train, y_train):
-        y_pred_proba_oof.append(pipeline.predict_proba(X_train[val_index])[:, 1])
-        y_oof.append(y_train[val_index])
-    y_oof = np.concatenate(y_oof, axis=0)
-    y_pred_proba_oof = np.concatenate(y_pred_proba_oof, axis=0)
-    y_pred_oof = np.where(y_pred_proba_oof > 0.5, 1, 0)
+    accuracy_oof = cv_result["test_accuracy_score"]
+    average_precision_oof = cv_result["test_average_precision_score"]
+    f1_oof = cv_result["test_f1_score"]
+    precision_oof = cv_result["test_precision_score"]
+    recall_oof = cv_result["test_recall_score"]
+    roc_auc_oof = cv_result["test_roc_auc_score"]
+
     y_pred_proba_test = pipeline.predict_proba(X_test)[:, 1]
     y_pred_test = np.where(y_pred_proba_test > 0.5, 1, 0)
-
-    accuracy_oof = accuracy_score(y_true=y_oof, y_pred=y_pred_oof)
-    average_precision_oof = average_precision_score(
-        y_true=y_oof, y_score=y_pred_proba_oof, average="macro"
-    )
-    f1_oof = f1_score(y_true=y_oof, y_pred=y_pred_oof, average="macro")
-    precision_oof = precision_score(y_true=y_oof, y_pred=y_pred_oof, average="macro")
-    recall_oof = recall_score(y_true=y_oof, y_pred=y_pred_oof, average="macro")
-    roc_auc_oof = roc_auc_score(y_true=y_oof, y_score=y_pred_proba_oof, average="macro")
     accuracy_test = accuracy_score(y_true=y_test, y_pred=y_pred_test)
     average_precision_test = average_precision_score(
         y_true=y_test, y_score=y_pred_proba_test, average="macro"
@@ -83,13 +80,14 @@ def log_metrics(
     roc_auc_test = roc_auc_score(
         y_true=y_test, y_score=y_pred_proba_test, average="macro"
     )
+
     print("--- oof score ---")
-    print(f"accuracy = {accuracy_oof}")
-    print(f"average_precision = {average_precision_oof}")
-    print(f"f1 = {f1_oof}")
-    print(f"precision = {precision_oof}")
-    print(f"recall = {recall_oof}")
-    print(f"roc_auc = {roc_auc_oof}")
+    print(f"accuracy = {accuracy_oof.mean()}")
+    print(f"average_precision = {average_precision_oof.mean()}")
+    print(f"f1 = {f1_oof.mean()}")
+    print(f"precision = {precision_oof.mean()}")
+    print(f"recall = {recall_oof.mean()}")
+    print(f"roc_auc = {roc_auc_oof.mean()}")
     print()
     print("--- test score ---")
     print(f"accuracy = {accuracy_test}")
@@ -445,39 +443,52 @@ def main(cfg: omegaconf.DictConfig) -> None:
     )
     search_result.fit(X=X_train, y=y_train)
     pipeline.set_params(**search_result.best_params_)
-    pipeline.fit(X=X_train, y=y_train)
 
-    pipeline_calibrated_sigmoid_prefit = Pipeline(
-        steps=[
-            ("preprocess", step_preprocess),
-            ("model", step_model),
-        ]
-    )
-    pipeline_calibrated_sigmoid_prefit.set_params(**search_result.best_params_)
-    pipeline_calibrated_sigmoid_prefit = CalibratedClassifierCV(
-        estimator=pipeline_calibrated_sigmoid_prefit,
-        method="sigmoid",
-        cv=splitter,
-        n_jobs=-1,
-        ensemble=False,
-    )
-    pipeline_calibrated_sigmoid_prefit.fit(X=X_train, y=y_train)
-
-    pipeline_calibrated_isotonic_prefit = Pipeline(
-        steps=[
-            ("preprocess", step_preprocess),
-            ("model", step_model),
-        ]
-    )
-    pipeline_calibrated_isotonic_prefit.set_params(**search_result.best_params_)
-    pipeline_calibrated_isotonic_prefit = CalibratedClassifierCV(
+    y_pred_proba_oof = cross_val_predict(
         estimator=pipeline,
-        method="isotonic",
+        X=X_train,
+        y=y_train,
         cv=splitter,
         n_jobs=-1,
-        ensemble=False,
-    )
-    pipeline_calibrated_isotonic_prefit.fit(X=X_train, y=y_train)
+        method="predict_proba",
+    )[:, 1]
+    y_pred_oof = np.where(y_pred_proba_oof > 0.5, 1, 0)
+
+    pipeline.fit(X=X_train, y=y_train)
+    y_pred_proba_test = pipeline.predict_proba(X_test)[:, 1]
+    y_pred_test = np.where(y_pred_proba_test > 0.5, 1, 0)
+
+    # pipeline_calibrated_sigmoid_prefit = Pipeline(
+    #     steps=[
+    #         ("preprocess", step_preprocess),
+    #         ("model", step_model),
+    #     ]
+    # )
+    # pipeline_calibrated_sigmoid_prefit.set_params(**search_result.best_params_)
+    # pipeline_calibrated_sigmoid_prefit = CalibratedClassifierCV(
+    #     estimator=pipeline_calibrated_sigmoid_prefit,
+    #     method="sigmoid",
+    #     cv=splitter,
+    #     n_jobs=-1,
+    #     ensemble=False,
+    # )
+    # pipeline_calibrated_sigmoid_prefit.fit(X=X_train, y=y_train)
+
+    # pipeline_calibrated_isotonic_prefit = Pipeline(
+    #     steps=[
+    #         ("preprocess", step_preprocess),
+    #         ("model", step_model),
+    #     ]
+    # )
+    # pipeline_calibrated_isotonic_prefit.set_params(**search_result.best_params_)
+    # pipeline_calibrated_isotonic_prefit = CalibratedClassifierCV(
+    #     estimator=pipeline,
+    #     method="isotonic",
+    #     cv=splitter,
+    #     n_jobs=-1,
+    #     ensemble=False,
+    # )
+    # pipeline_calibrated_isotonic_prefit.fit(X=X_train, y=y_train)
 
     feature_names = list(pipeline.feature_names_in_)
     save_dir = Path(cfg.save_dir)
@@ -489,92 +500,189 @@ def main(cfg: omegaconf.DictConfig) -> None:
         save_dir / "pipeline_calibrated_isotonic_prefit"
     )
 
-    log_metrics(
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
-        splitter=splitter,
-        pipeline=pipeline,
+    accuracy_oof = accuracy_score(y_true=y_train, y_pred=y_pred_oof)
+    average_precision_oof = average_precision_score(
+        y_true=y_train, y_score=y_pred_proba_oof, average="macro"
     )
-    plot_feature_importance_and_partial_dependence(
-        pipeline=pipeline,
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
-        scoring=scoring,
-        cfg=cfg,
-        feature_names=feature_names,
-        n_repeats=cfg.feature_importance.n_repeats,
-        save_dir=save_dir_pipeline,
-    )
-    plot_calibration_curve(
-        pipeline=pipeline,
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
-        save_dir=save_dir_pipeline,
+    f1_oof = f1_score(y_true=y_train, y_pred=y_pred_oof, average="macro")
+    precision_oof = precision_score(y_true=y_train, y_pred=y_pred_oof, average="macro")
+    recall_oof = recall_score(y_true=y_train, y_pred=y_pred_oof, average="macro")
+    roc_auc_oof = roc_auc_score(
+        y_true=y_train, y_score=y_pred_proba_oof, average="macro"
     )
 
-    log_metrics(
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
-        splitter=splitter,
-        pipeline=pipeline_calibrated_sigmoid_prefit,
+    accuracy_test = accuracy_score(y_true=y_test, y_pred=y_pred_test)
+    average_precision_test = average_precision_score(
+        y_true=y_test, y_score=y_pred_proba_test, average="macro"
     )
-    plot_feature_importance_and_partial_dependence(
-        pipeline=pipeline_calibrated_sigmoid_prefit,
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
-        scoring=scoring,
-        cfg=cfg,
-        feature_names=feature_names,
-        n_repeats=cfg.feature_importance.n_repeats,
-        save_dir=save_dir_pipeline_calibrated_sigmoid_prefit,
-    )
-    plot_calibration_curve(
-        pipeline=pipeline_calibrated_sigmoid_prefit,
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
-        save_dir=save_dir_pipeline_calibrated_sigmoid_prefit,
+    f1_test = f1_score(y_true=y_test, y_pred=y_pred_test, average="macro")
+    precision_test = precision_score(y_true=y_test, y_pred=y_pred_test, average="macro")
+    recall_test = recall_score(y_true=y_test, y_pred=y_pred_test, average="macro")
+    roc_auc_test = roc_auc_score(
+        y_true=y_test, y_score=y_pred_proba_test, average="macro"
     )
 
-    log_metrics(
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
-        splitter=splitter,
-        pipeline=pipeline_calibrated_isotonic_prefit,
+    print("--- oof score ---")
+    print(f"accuracy = {accuracy_oof}")
+    print(f"average_precision = {average_precision_oof}")
+    print(f"f1 = {f1_oof}")
+    print(f"precision = {precision_oof}")
+    print(f"recall = {recall_oof}")
+    print(f"roc_auc = {roc_auc_oof}")
+    print()
+    print("--- test score ---")
+    print(f"accuracy = {accuracy_test}")
+    print(f"average_precision = {average_precision_test}")
+    print(f"f1 = {f1_test}")
+    print(f"precision = {precision_test}")
+    print(f"recall = {recall_test}")
+    print(f"roc_auc = {roc_auc_test}")
+    print()
+
+    fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(12, 6))
+    ConfusionMatrixDisplay.from_predictions(
+        y_true=y_train,
+        y_pred=y_pred_oof,
+        normalize="true",
+        cmap="viridis",
+        ax=ax[0],
     )
-    plot_feature_importance_and_partial_dependence(
-        pipeline=pipeline_calibrated_isotonic_prefit,
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
-        scoring=scoring,
-        cfg=cfg,
-        feature_names=feature_names,
-        n_repeats=cfg.feature_importance.n_repeats,
-        save_dir=save_dir_pipeline_calibrated_isotonic_prefit,
+    ax[0].set_title("oof")
+    ax[0].grid(False)
+    ConfusionMatrixDisplay.from_predictions(
+        y_true=y_test,
+        y_pred=y_pred_test,
+        normalize="true",
+        cmap="viridis",
+        ax=ax[1],
     )
-    plot_calibration_curve(
-        pipeline=pipeline_calibrated_isotonic_prefit,
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
-        save_dir=save_dir_pipeline_calibrated_isotonic_prefit,
+    ax[1].set_title("test")
+    ax[1].grid(False)
+    fig.tight_layout()
+    save_path = save_dir_pipeline / "confusion_matrix.png"
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(str(save_path))
+
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(8, 8))
+    DetCurveDisplay.from_predictions(
+        y_true=y_train,
+        y_pred=y_pred_proba_oof,
+        name="train",
+        ax=ax,
     )
+    DetCurveDisplay.from_predictions(
+        y_true=y_test,
+        y_pred=y_pred_proba_test,
+        name="test",
+        ax=ax,
+    )
+    fig.tight_layout()
+    save_path = save_dir_pipeline / "det_curve.png"
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(str(save_path))
+
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(8, 8))
+    PrecisionRecallDisplay.from_predictions(
+        y_true=y_train,
+        y_pred=y_pred_proba_oof,
+        plot_chance_level=False,
+        name="train",
+        ax=ax,
+    )
+    PrecisionRecallDisplay.from_predictions(
+        y_true=y_test,
+        y_pred=y_pred_proba_test,
+        plot_chance_level=True,
+        name="test",
+        ax=ax,
+    )
+    fig.tight_layout()
+    save_path = save_dir_pipeline / "pr_curve.png"
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(str(save_path))
+
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(8, 8))
+    RocCurveDisplay.from_predictions(
+        y_true=y_train,
+        y_pred=y_pred_proba_oof,
+        plot_chance_level=False,
+        name="train",
+        ax=ax,
+    )
+    RocCurveDisplay.from_predictions(
+        y_true=y_test,
+        y_pred=y_pred_proba_test,
+        plot_chance_level=True,
+        name="test",
+        ax=ax,
+    )
+    fig.tight_layout()
+    save_path = save_dir_pipeline / "roc_curve.png"
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(str(save_path))
+
+    # plot_feature_importance_and_partial_dependence(
+    #     pipeline=pipeline,
+    #     X_train=X_train,
+    #     y_train=y_train,
+    #     X_test=X_test,
+    #     y_test=y_test,
+    #     scoring=scoring,
+    #     cfg=cfg,
+    #     feature_names=feature_names,
+    #     n_repeats=cfg.feature_importance.n_repeats,
+    #     save_dir=save_dir_pipeline,
+    # )
+    # plot_calibration_curve(
+    #     pipeline=pipeline,
+    #     X_train=X_train,
+    #     y_train=y_train,
+    #     X_test=X_test,
+    #     y_test=y_test,
+    #     save_dir=save_dir_pipeline,
+    # )
+
+    # plot_feature_importance_and_partial_dependence(
+    #     pipeline=pipeline_calibrated_sigmoid_prefit,
+    #     X_train=X_train,
+    #     y_train=y_train,
+    #     X_test=X_test,
+    #     y_test=y_test,
+    #     scoring=scoring,
+    #     cfg=cfg,
+    #     feature_names=feature_names,
+    #     n_repeats=cfg.feature_importance.n_repeats,
+    #     save_dir=save_dir_pipeline_calibrated_sigmoid_prefit,
+    # )
+    # plot_calibration_curve(
+    #     pipeline=pipeline_calibrated_sigmoid_prefit,
+    #     X_train=X_train,
+    #     y_train=y_train,
+    #     X_test=X_test,
+    #     y_test=y_test,
+    #     save_dir=save_dir_pipeline_calibrated_sigmoid_prefit,
+    # )
+
+    # plot_feature_importance_and_partial_dependence(
+    #     pipeline=pipeline_calibrated_isotonic_prefit,
+    #     X_train=X_train,
+    #     y_train=y_train,
+    #     X_test=X_test,
+    #     y_test=y_test,
+    #     scoring=scoring,
+    #     cfg=cfg,
+    #     feature_names=feature_names,
+    #     n_repeats=cfg.feature_importance.n_repeats,
+    #     save_dir=save_dir_pipeline_calibrated_isotonic_prefit,
+    # )
+    # plot_calibration_curve(
+    #     pipeline=pipeline_calibrated_isotonic_prefit,
+    #     X_train=X_train,
+    #     y_train=y_train,
+    #     X_test=X_test,
+    #     y_test=y_test,
+    #     save_dir=save_dir_pipeline_calibrated_isotonic_prefit,
+    # )
 
 
 if __name__ == "__main__":
