@@ -1,0 +1,43 @@
+seed: 42
+data:
+  csv_path: /Users/minami/dev/python/sklearn-user-guide/heart_statlog_cleveland_hungary_final.csv
+  num_col_list:
+    ["age", "resting_bp_s", "cholesterol", "max_heart_rate", "oldpeak"]
+  cat_col_list:
+    [
+      "sex",
+      "chest_pain_type",
+      "fasting_blood_sugar",
+      "resting_ecg",
+      "exercise_angina",
+      "ST_slope",
+    ]
+  target: ["target"]
+  scaler: standard
+  imputer: simple
+  imputer_params:
+    simple:
+      strategy: mean
+      add_indicator: true
+    iterative:
+      estimator: bayes
+      sample_posterior: false
+      max_iter: 10
+      tol: 1.0e-3
+      initial_strategy: mean
+      imputation_order: ascending
+      add_indicator: true
+    knn:
+      n_neighbors: 5
+      weights: uniform
+      add_indicator: true
+splitter:
+  n_splits: 5
+  n_repeats: 1
+train_test_split:
+  test_size: 0.2
+  shuffle: true
+eval_metric: roc_auc_score
+save_dir: /Users/minami/dev/python/sklearn-user-guide/fig/result
+feature_importance:
+  n_repeats: 10
