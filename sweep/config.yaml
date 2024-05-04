@@ -1,0 +1,14 @@
+program: /Users/minami/dev/python/sklearn-user-guide/src/binary/binary_lr_optuna.py
+method: grid
+name: sweep
+metric:
+  goal: maximize
+  name: val_acc
+parameters:
+  batch_size:
+    values: [16, 32, 64]
+  lr:
+    min: 0.0001
+    max: 0.1
+  epochs:
+    values: [5, 10, 15]

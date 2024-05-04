@@ -1,7 +1,7 @@
 seed: 42
 wandb:
   project_name: binary_classification_test
-  group_name:
+  group_name: lightgbm_optuna_eval_metric
   run_name:
 data:
   csv_path: /Users/minami/dev/python/sklearn-user-guide/heart_statlog_cleveland_hungary_final.csv
@@ -41,7 +41,7 @@ splitter:
 train_test_split:
   test_size: 0.2
   shuffle: true
-eval_metric: roc_auc_score
+eval_metric: accuracy_oof
 save_dir: /Users/minami/dev/python/sklearn-user-guide/fig/result
 feature_importance:
   n_repeats: 10
