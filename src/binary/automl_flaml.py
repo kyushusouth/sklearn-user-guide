@@ -2,7 +2,6 @@ import hydra
 import omegaconf
 import polars as pl
 from flaml import AutoML
-from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import RepeatedStratifiedKFold, train_test_split
 
 
