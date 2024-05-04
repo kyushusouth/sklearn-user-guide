@@ -1,4 +1,8 @@
 seed: 42
+wandb:
+  project_name: binary_classification_test
+  group_name:
+  run_name:
 data:
   csv_path: /Users/minami/dev/python/sklearn-user-guide/heart_statlog_cleveland_hungary_final.csv
   num_col_list:
